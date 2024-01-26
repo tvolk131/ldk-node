@@ -1,7 +1,6 @@
 use crate::event::EventQueue;
 use crate::fee_estimator::OnchainFeeEstimator;
 use crate::gossip::GossipSource;
-use crate::io;
 use crate::io::sqlite_store::SqliteStore;
 use crate::logger::{log_error, FilesystemLogger, Logger};
 use crate::payment_store::PaymentStore;
@@ -14,6 +13,7 @@ use crate::types::{
 };
 use crate::wallet::Wallet;
 use crate::LogLevel;
+use crate::{io, UnknownPreimageFetcher};
 use crate::{
 	Config, Node, BDK_CLIENT_CONCURRENCY, BDK_CLIENT_STOP_GAP, DEFAULT_ESPLORA_SERVER_URL,
 	WALLET_KEYS_SEED_LEN,
@@ -251,6 +251,14 @@ impl NodeBuilder {
 	/// Sets the level at which [`Node`] will log messages.
 	pub fn set_log_level(&mut self, level: LogLevel) -> &mut Self {
 		self.config.log_level = level;
+		self
+	}
+
+	/// Sets the unknown preimage fetcher.
+	pub fn set_unknown_preimage_fetcher(
+		&mut self, fetcher: Box<dyn UnknownPreimageFetcher>,
+	) -> &mut Self {
+		self.config.unknown_preimage_fetcher_or = Some(Arc::from(fetcher));
 		self
 	}
 
@@ -830,6 +838,8 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 
 	let (stop_sender, stop_receiver) = tokio::sync::watch::channel(());
 
+	let unknown_preimage_fetcher_or = config.unknown_preimage_fetcher_or.clone();
+
 	Ok(Node {
 		runtime,
 		stop_sender,
@@ -853,6 +863,7 @@ fn build_with_store_internal<K: KVStore + Sync + Send + 'static>(
 		scorer,
 		peer_store,
 		payment_store,
+		unknown_preimage_fetcher_or,
 	})
 }
 

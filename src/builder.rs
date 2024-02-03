@@ -256,7 +256,7 @@ impl NodeBuilder {
 
 	/// Sets the unknown preimage fetcher.
 	pub fn set_unknown_preimage_fetcher(
-		&mut self, fetcher: Box<dyn UnknownPreimageFetcher>,
+		&mut self, fetcher: Arc<dyn UnknownPreimageFetcher>,
 	) -> &mut Self {
 		self.config.unknown_preimage_fetcher_or = Some(Arc::from(fetcher));
 		self

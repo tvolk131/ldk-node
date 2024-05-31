@@ -8,13 +8,14 @@ use crate::error::Error;
 use crate::liquidity::LiquiditySource;
 use crate::logger::{log_error, log_info, FilesystemLogger, Logger};
 use crate::payment::store::{
-	LSPFeeLimits, PaymentDetails, PaymentDirection, PaymentKind, PaymentStatus, PaymentStore,
+	LSPFeeLimits, PaymentDetails, PaymentDetailsUpdate, PaymentDirection, PaymentKind,
+	PaymentStatus, PaymentStore,
 };
 use crate::peer_store::{PeerInfo, PeerStore};
 use crate::types::{ChannelManager, KeysManager};
 
 use lightning::ln::channelmanager::{PaymentId, RecipientOnionFields, Retry, RetryableSendFailure};
-use lightning::ln::PaymentHash;
+use lightning::ln::{PaymentHash, PaymentPreimage};
 use lightning::routing::router::{PaymentParameters, RouteParameters};
 
 use lightning_invoice::{payment, Bolt11Invoice, Currency};
@@ -22,6 +23,7 @@ use lightning_invoice::{payment, Bolt11Invoice, Currency};
 use bitcoin::hashes::Hash;
 
 use std::sync::{Arc, RwLock};
+use std::time::SystemTime;
 
 /// A payment handler allowing to create and pay [BOLT 11] invoices.
 ///
@@ -259,7 +261,7 @@ impl Bolt11Payment {
 	pub fn receive(
 		&self, amount_msat: u64, description: &str, expiry_secs: u32,
 	) -> Result<Bolt11Invoice, Error> {
-		self.receive_inner(Some(amount_msat), description, expiry_secs)
+		self.receive_inner(Some(amount_msat), description, expiry_secs, None)
 	}
 
 	/// Returns a payable invoice that can be used to request and receive a payment for which the
@@ -267,31 +269,125 @@ impl Bolt11Payment {
 	pub fn receive_variable_amount(
 		&self, description: &str, expiry_secs: u32,
 	) -> Result<Bolt11Invoice, Error> {
-		self.receive_inner(None, description, expiry_secs)
+		self.receive_inner(None, description, expiry_secs, None)
+	}
+
+	/// Returns a payable invoice that can be used to request and receive a payment of the amount
+	/// given.
+	///
+	/// Since the payment hash is provided and therefore the preimage is unknown, the preimage
+	/// must be fetched out-of-band in order to unlock and redeem the funds. To facilitate this, a
+	/// `PaymentClaimable` event will be emitted containing the payment hash when the payment is
+	/// received. At that point, one of two actions should be taken:
+	///
+	/// 1. The payment preimage should be obtained out-of-band and
+	///    [`Bolt11Payment::claim_funds_with_payment_preimage`] should be called with it.
+	/// 2. The payment should be failed and unwound using [`Bolt11Payment::fail_payment_backwards`].
+	pub fn receive_with_payment_hash(
+		&self, amount_msat: u64, description: &str, expiry_secs: u32, payment_hash: PaymentHash,
+	) -> Result<Bolt11Invoice, Error> {
+		self.receive_inner(Some(amount_msat), description, expiry_secs, Some(payment_hash))
+	}
+
+	/// Returns a payable invoice that can be used to request and receive a payment for which the
+	/// amount is to be determined by the user, also known as a "zero-amount" invoice.
+	///
+	/// Since the payment hash is provided and therefore the preimage is unknown, the preimage
+	/// must be fetched out-of-band in order to unlock and redeem the funds. To facilitate this, a
+	/// `PaymentClaimable` event will be emitted containing the payment hash when the payment is
+	/// received. At that point, one of two actions should be taken:
+	///
+	/// 1. The payment preimage should be obtained out-of-band and
+	///    [`Bolt11Payment::claim_funds_with_payment_preimage`] should be called with it.
+	/// 2. The payment should be failed and unwound using [`Bolt11Payment::fail_payment_backwards`].
+	pub fn receive_variable_amount_with_payment_hash(
+		&self, description: &str, expiry_secs: u32, payment_hash: PaymentHash,
+	) -> Result<Bolt11Invoice, Error> {
+		self.receive_inner(None, description, expiry_secs, Some(payment_hash))
+	}
+
+	/// Claims the funds of a payment with the given preimage. Should be called in response to a
+	/// `PaymentClaimable` event once the preimage is obtained.
+	pub fn claim_funds_with_payment_preimage(&self, payment_preimage: PaymentPreimage) {
+		self.channel_manager.claim_funds(payment_preimage);
+	}
+
+	/// Fails the incoming payment with the given payment hash. Should be called in response to a
+	/// `PaymentClaimable` event when the preimage cannot be obtained or the payment should be
+	/// rejected.
+	pub fn fail_payment_backwards(&self, payment_hash: PaymentHash) {
+		log_error!(
+			self.logger,
+			"Failed to claim payment with hash {}: preimage unknown.",
+			payment_hash.to_string(),
+		);
+
+		self.channel_manager.fail_htlc_backwards(&payment_hash);
+
+		let update = PaymentDetailsUpdate {
+			status: Some(PaymentStatus::Failed),
+			..PaymentDetailsUpdate::new(PaymentId(payment_hash.0))
+		};
+		self.payment_store.update(&update).unwrap_or_else(|e| {
+			log_error!(self.logger, "Failed to access payment store: {}", e);
+			panic!("Failed to access payment store");
+		});
 	}
 
 	fn receive_inner(
 		&self, amount_msat: Option<u64>, description: &str, expiry_secs: u32,
+		payment_hash: Option<PaymentHash>,
 	) -> Result<Bolt11Invoice, Error> {
 		let currency = Currency::from(self.config.network);
 		let keys_manager = Arc::clone(&self.keys_manager);
-		let invoice = match lightning_invoice::utils::create_invoice_from_channelmanager(
-			&self.channel_manager,
-			keys_manager,
-			Arc::clone(&self.logger),
-			currency,
-			amount_msat,
-			description.to_string(),
-			expiry_secs,
-			None,
-		) {
-			Ok(inv) => {
-				log_info!(self.logger, "Invoice created: {}", inv);
-				inv
+		let invoice = match payment_hash {
+			Some(payment_hash) => {
+				let duration_since_epoch = SystemTime::now()
+					.duration_since(SystemTime::UNIX_EPOCH)
+					.expect("for the foreseeable future this shouldn't happen");
+
+				match lightning_invoice::utils::create_invoice_from_channelmanager_and_duration_since_epoch_with_payment_hash(
+				&self.channel_manager,
+				keys_manager,
+				Arc::clone(&self.logger),
+				currency,
+				amount_msat,
+				description.to_string(),
+				duration_since_epoch,
+				expiry_secs,
+				payment_hash,
+				None,
+			) {
+				Ok(inv) => {
+					log_info!(self.logger, "Invoice created: {}", inv);
+					inv
+				}
+				Err(e) => {
+					log_error!(self.logger, "Failed to create invoice: {}", e);
+					return Err(Error::InvoiceCreationFailed);
+				}
+			}
 			},
-			Err(e) => {
-				log_error!(self.logger, "Failed to create invoice: {}", e);
-				return Err(Error::InvoiceCreationFailed);
+			None => {
+				match lightning_invoice::utils::create_invoice_from_channelmanager(
+					&self.channel_manager,
+					keys_manager,
+					Arc::clone(&self.logger),
+					currency,
+					amount_msat,
+					description.to_string(),
+					expiry_secs,
+					None,
+				) {
+					Ok(inv) => {
+						log_info!(self.logger, "Invoice created: {}", inv);
+						inv
+					},
+					Err(e) => {
+						log_error!(self.logger, "Failed to create invoice: {}", e);
+						return Err(Error::InvoiceCreationFailed);
+					},
+				}
 			},
 		};
 

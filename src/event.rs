@@ -73,6 +73,15 @@ pub enum Event {
 		/// This will be `None` for events serialized by LDK Node v0.2.1 and prior.
 		reason: Option<PaymentFailureReason>,
 	},
+	/// A payment has been received that must be manually claimed because the preimage is unknown.
+	PaymentClaimable {
+		/// The hash of the payment.
+		payment_hash: PaymentHash,
+		/// The value, in thousandths of a satoshi, that has been received.
+		amount_msat: u64,
+		/// The block height at which this payment will be failed back and will no longer be eligible for claiming.
+		claim_deadline: Option<u32>,
+	},
 	/// A payment has been received.
 	PaymentReceived {
 		/// A local identifier used to track the payment.
@@ -133,6 +142,11 @@ impl_writeable_tlv_based_enum!(Event,
 		(0, payment_hash, required),
 		(1, reason, option),
 		(3, payment_id, option),
+	},
+	(6, PaymentClaimable) => {
+		(0, payment_hash, required),
+		(2, amount_msat, required),
+		(4, claim_deadline, required),
 	},
 	(2, PaymentReceived) => {
 		(0, payment_hash, required),
@@ -434,7 +448,7 @@ where
 				receiver_node_id: _,
 				via_channel_id: _,
 				via_user_channel_id: _,
-				claim_deadline: _,
+				claim_deadline,
 				onion_fields: _,
 				counterparty_skimmed_fee_msat,
 			} => {
@@ -598,22 +612,22 @@ where
 				if let Some(preimage) = payment_preimage {
 					self.channel_manager.claim_funds(preimage);
 				} else {
-					log_error!(
+					log_info!(
 						self.logger,
-						"Failed to claim payment with ID {}: preimage unknown.",
-						payment_id,
+						"We received a payment with payment hash {} of unknown preimage.",
+						hex_utils::to_string(&payment_hash.0),
 					);
-					self.channel_manager.fail_htlc_backwards(&payment_hash);
 
-					let update = PaymentDetailsUpdate {
-						hash: Some(Some(payment_hash)),
-						status: Some(PaymentStatus::Failed),
-						..PaymentDetailsUpdate::new(payment_id)
-					};
-					self.payment_store.update(&update).unwrap_or_else(|e| {
-						log_error!(self.logger, "Failed to access payment store: {}", e);
-						panic!("Failed to access payment store");
-					});
+					self.event_queue
+						.add_event(Event::PaymentClaimable {
+							payment_hash,
+							amount_msat,
+							claim_deadline,
+						})
+						.unwrap_or_else(|e| {
+							log_error!(self.logger, "Failed to push to event queue: {}", e);
+							panic!("Failed to push to event queue");
+						});
 				}
 			},
 			LdkEvent::PaymentClaimed {

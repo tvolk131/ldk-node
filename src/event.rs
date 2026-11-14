@@ -750,7 +750,8 @@ where
 					// user interaction.
 					match info.kind {
 						PaymentKind::Bolt11 { preimage, .. }
-						| PaymentKind::Bolt11Jit { preimage, .. } => {
+						| PaymentKind::Bolt11Jit { preimage, .. }
+						| PaymentKind::Bolt12Offer { preimage, .. } => {
 							if purpose.preimage().is_none() {
 								debug_assert!(
 									preimage.is_none(),

@@ -85,6 +85,7 @@ mod connection;
 mod data_store;
 mod error;
 mod event;
+pub mod external_bolt12;
 mod fee_estimator;
 mod ffi;
 mod gossip;
@@ -190,6 +191,7 @@ pub struct Node {
 	output_sweeper: Arc<Sweeper>,
 	peer_manager: Arc<PeerManager>,
 	onion_messenger: Arc<OnionMessenger>,
+	external_offers_handler: Arc<external_bolt12::ExternalOffersHandler>,
 	connection_manager: Arc<ConnectionManager<Arc<Logger>>>,
 	keys_manager: Arc<KeysManager>,
 	network_graph: Arc<Graph>,

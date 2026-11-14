@@ -1593,6 +1593,9 @@ fn build_with_store_internal(
 		})?;
 	}
 
+	let external_offers_handler =
+		Arc::new(crate::external_bolt12::ExternalOffersHandler::new(Arc::clone(&channel_manager)));
+
 	// Initialize the PeerManager
 	let onion_messenger: Arc<OnionMessenger> =
 		if let Some(AsyncPaymentsRole::Server) = async_payments_role {
@@ -1602,7 +1605,7 @@ fn build_with_store_internal(
 				Arc::clone(&logger),
 				Arc::clone(&channel_manager),
 				message_router,
-				Arc::clone(&channel_manager),
+				Arc::clone(&external_offers_handler),
 				Arc::clone(&channel_manager),
 				IgnoringMessageHandler {},
 				IgnoringMessageHandler {},
@@ -1614,7 +1617,7 @@ fn build_with_store_internal(
 				Arc::clone(&logger),
 				Arc::clone(&channel_manager),
 				message_router,
-				Arc::clone(&channel_manager),
+				Arc::clone(&external_offers_handler),
 				Arc::clone(&channel_manager),
 				IgnoringMessageHandler {},
 				IgnoringMessageHandler {},
@@ -1839,6 +1842,7 @@ fn build_with_store_internal(
 		output_sweeper,
 		peer_manager,
 		onion_messenger,
+		external_offers_handler,
 		connection_manager,
 		keys_manager,
 		network_graph,

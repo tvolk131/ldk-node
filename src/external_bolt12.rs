@@ -107,8 +107,12 @@ impl ExternalOffersHandler {
 		Self { channel_manager, handler: RwLock::new(None), pending: Mutex::new(Vec::new()) }
 	}
 
+	/// Offers `request` to the application's handler. Returns it if the handler declined it, or if
+	/// none is installed, so it goes on to [`ChannelManager`].
 	fn try_external(&self, request: ExternalInvoiceRequest) -> Option<ExternalInvoiceRequest> {
-		let handler = self.handler.read().unwrap().clone()?;
+		let Some(handler) = self.handler.read().unwrap().clone() else {
+			return Some(request);
+		};
 
 		handler(request).err()
 	}

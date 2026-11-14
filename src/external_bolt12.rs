@@ -51,11 +51,13 @@ use crate::Node;
 /// The most invoices that may wait to be sent at once.
 pub const MAX_PENDING_EXTERNAL_INVOICES: usize = 32;
 
-/// The minimum final CLTV expiry delta of an externally issued invoice's payment path.
+/// The final CLTV expiry delta an externally issued invoice's payment path advertises.
 ///
-/// The payment is claimed manually once the application learns the preimage, so LDK must leave it
-/// time to do so before failing the HTLC back on its own. LDK rejects an HTLC that expires sooner
-/// than this many blocks after it arrives.
+/// The payment is claimed manually once the application learns the preimage, so the payer is asked
+/// to leave that much time. Per BOLT 4 the delta is folded into the blinded path's payinfo, not into
+/// the final onion payload, so the node cannot enforce it: a payer that ignores the payinfo can
+/// still send an HTLC that expires sooner. The application must check the deadline of the HTLC it
+/// actually holds.
 pub const EXTERNAL_PAYMENT_MIN_FINAL_CLTV_EXPIRY_DELTA: u16 = 144;
 
 /// How long the node accepts a payment for a registered hash.
@@ -208,9 +210,9 @@ impl Node {
 	/// manually. Registering the same hash again for the same request and amount returns a fresh path
 	/// for the existing registration; anything else already known under the hash is refused.
 	///
-	/// The path requires an HTLC to expire at least
-	/// [`EXTERNAL_PAYMENT_MIN_FINAL_CLTV_EXPIRY_DELTA`] blocks after it arrives. A caller must
-	/// still check the deadline of the HTLC it actually holds before acting on it.
+	/// The path asks payers for [`EXTERNAL_PAYMENT_MIN_FINAL_CLTV_EXPIRY_DELTA`] blocks of expiry,
+	/// which the node cannot enforce. A caller must check the deadline of the HTLC it actually holds
+	/// before acting on it.
 	pub fn register_external_bolt12_payment(
 		&self, payment_hash: PaymentHash, amount_msat: u64, request: &InvoiceRequest,
 		offer_id: OfferId,
@@ -242,11 +244,13 @@ impl Node {
 			None => {
 				let secret = self
 					.channel_manager
+					// The final payload of a blinded payment excludes the path's CLTV delta,
+					// so requiring it here would reject every correctly built payment.
 					.create_inbound_payment_for_hash(
 						payment_hash,
 						Some(amount_msat),
 						EXTERNAL_PAYMENT_EXPIRY_SECS,
-						Some(EXTERNAL_PAYMENT_MIN_FINAL_CLTV_EXPIRY_DELTA),
+						None,
 					)
 					.map_err(|()| Error::InvoiceCreationFailed)?;
 
